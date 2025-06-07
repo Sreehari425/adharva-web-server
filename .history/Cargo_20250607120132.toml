@@ -1,0 +1,11 @@
+[package]
+name = "adharva-event-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rocket = { version = "0.5.0-rc.3", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde_json = "1.0"
+rocket-rate-limit ={ git = "https://github.com/Sreehari425/rocket-rate-limit.git"}
