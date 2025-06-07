@@ -7,8 +7,42 @@ use std::sync::Mutex;
 use std::io::Write; 
 use std::path::Path;
 type SharedEvents = Mutex<Vec<EventDetail>>;
-
+use rocket::http::Status;
+use rocket::request::{FromRequest, Outcome, Request};
+use dotenvy::{self, dotenv, from_path, var};
 use rocket_governor::{Method, Quota, RocketGovernable, RocketGovernor};
+
+
+pub struct ApiKey(String);
+pub fn load_env() -> String {
+    dotenv().ok(); // Loads .env
+    let api_secret_key = var("api_secret_key").expect("api_secret_key not set");
+    api_secret_key
+    
+}
+
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for ApiKey {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        // Define your valid API keys (hardcoded or loaded from config)
+        let api_key = load_env();
+        let valid_keys = vec![&api_key[..]];
+
+        // Extract the Authorization header, expecting "Bearer <key>"
+        let key_opt = request.headers()
+            .get_one("Authorization")
+            .and_then(|header| header.strip_prefix("Bearer "));
+
+        // Check if extracted key is in valid keys list
+        match key_opt {
+            Some(key) if valid_keys.contains(&key) => Outcome::Success(ApiKey(key.to_string())),
+            _ => Outcome::Error((Status::Unauthorized, ())),
+        }
+    }
+}
 
 pub struct RateLimitGuard;
 
@@ -97,6 +131,7 @@ fn update_event(
     event_name: &str,
     status: &str,
     state: &rocket::State<SharedEvents>,
+    _api_key: ApiKey,
     _limitguard: RocketGovernor<RateLimitGuard>
 ) -> Json<Vec<EventDetail>> {
     use std::str::FromStr;
