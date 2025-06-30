@@ -13,6 +13,7 @@ use dotenvy::{self, dotenv, from_path, var};
 use rocket_governor::{Method, Quota, RocketGovernable, RocketGovernor};
 
 
+use rocket_cors::{AllowedOrigins, CorsOptions};
 pub struct ApiKey(String);
 pub fn load_env() -> String {
     dotenv().ok(); // Loads .env
@@ -168,12 +169,14 @@ fn get_events(state: &rocket::State<SharedEvents>,_limitguard: RocketGovernor<Ra
 #[launch]
 fn rocket() -> _ {
     let events = load_initial_state();
-
+    let cors = CorsOptions::default()
+        .to_cors()
+        .expect("error creating CORS fairing");
     rocket::build()
         .manage(Mutex::new(events))
         .mount("/", routes![
             update_event,
             get_events
         ])
+        .attach(cors)
 }
-
