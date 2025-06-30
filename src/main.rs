@@ -1,46 +1,70 @@
 #[macro_use] extern crate rocket;
+
 use rocket::{serde::{json::Json, Serialize, Deserialize}};
 use chrono::{DateTime, Utc};
-use std::fs;
-use std::str::FromStr;
-use std::sync::Mutex;
-use std::io::Write; 
-use std::path::Path;
-type SharedEvents = Mutex<Vec<EventDetail>>;
+use std::{fs, str::FromStr, sync::Mutex, collections::HashMap};
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
-use dotenvy::{self, dotenv, from_path, var};
+use dotenvy::{dotenv, var};
 use rocket_governor::{Method, Quota, RocketGovernable, RocketGovernor};
+use rocket_cors::{CorsOptions};
 
+type SharedEvents = Mutex<Vec<EventDetail>>;
 
-use rocket_cors::{AllowedOrigins, CorsOptions};
 pub struct ApiKey(String);
-pub fn load_env() -> String {
-    dotenv().ok(); // Loads .env
-    let api_secret_key = var("api_secret_key").expect("api_secret_key not set");
-    api_secret_key
-    
+
+struct ApiKeys {
+    root_key: String,
+    event_keys: HashMap<String, String>, // event_name -> api_key
 }
 
+impl ApiKeys {
+    fn load_from_env() -> Self {
+        dotenv().ok();
+
+        let root_key = var("API_SECRET_KEY").expect("API_SECRET_KEY not set");
+
+        let mut event_keys = HashMap::new();
+
+        if let Ok(key) = var("YUKTI_API_KEY") {
+            event_keys.insert("Yukti".to_string(), key);
+        }
+        if let Ok(key) = var("NATYA_API_KEY") {
+            event_keys.insert("Natya-Sutra".to_string(), key);
+        }
+        if let Ok(key) = var("NAADA_API_KEY") {
+            event_keys.insert("Naada-Nirvana".to_string(), key);
+        }
+        if let Ok(key) = var("NAZAKAT_API_KEY") {
+            event_keys.insert("Nazakat".to_string(), key);
+        }
+        if let Ok(key) = var("NATAKA_API_KEY") {
+            event_keys.insert("Nataka".to_string(), key);
+        }
+        // Add more events + keys as needed
+
+        ApiKeys { root_key, event_keys }
+    }
+}
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for ApiKey {
     type Error = ();
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        // Define your valid API keys (hardcoded or loaded from config)
-        let api_key = load_env();
-        let valid_keys = vec![&api_key[..]];
+    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let api_keys = match req.rocket().state::<ApiKeys>() {
+            Some(state) => state,
+            None => return Outcome::Error((Status::InternalServerError, ())),
+        };
 
-        // Extract the Authorization header, expecting "Bearer <key>"
-        let key_opt = request.headers()
+        // Extract Authorization: Bearer <key>
+        let key_opt = req.headers()
             .get_one("Authorization")
             .and_then(|header| header.strip_prefix("Bearer "));
 
-        // Check if extracted key is in valid keys list
         match key_opt {
-            Some(key) if valid_keys.contains(&key) => Outcome::Success(ApiKey(key.to_string())),
-            _ => Outcome::Error((Status::Unauthorized, ())),
+            Some(key) => Outcome::Success(ApiKey(key.to_string())),
+            None => Outcome::Error((Status::Unauthorized, ())),
         }
     }
 }
@@ -52,9 +76,6 @@ impl<'r> RocketGovernable<'r> for RateLimitGuard {
         Quota::per_second(Self::nonzero(1u32))
     }
 }
-
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
@@ -77,7 +98,6 @@ struct EventDetail {
     status: EventStatus,
 }
 
-
 impl FromStr for EventStatus {
     type Err = ();
 
@@ -96,7 +116,6 @@ impl FromStr for EventStatus {
         }
     }
 }
- 
 
 fn save_current_state(events: &Vec<EventDetail>) -> std::io::Result<()> {
     let serialized = serde_json::to_string_pretty(events)?;
@@ -110,7 +129,6 @@ fn load_events_from_file(path: &str) -> Vec<EventDetail> {
 }
 
 fn load_initial_state() -> Vec<EventDetail> {
-    // Try to load current state if it exists
     if let Ok(data) = fs::read_to_string("curr_state.json") {
         if let Ok(events) = serde_json::from_str(&data) {
             return events;
@@ -126,42 +144,53 @@ fn load_initial_state() -> Vec<EventDetail> {
     events
 }
 
-
 #[post("/api/v3/update/<event_name>/<status>")]
 fn update_event(
     event_name: &str,
     status: &str,
     state: &rocket::State<SharedEvents>,
-    _api_key: ApiKey,
+    api_key: ApiKey,
+    api_keys: &rocket::State<ApiKeys>,
     _limitguard: RocketGovernor<RateLimitGuard>
-) -> Json<Vec<EventDetail>> {
-    use std::str::FromStr;
+) -> Result<Json<Vec<EventDetail>>, Status> {
+
+    // Root key can update any event
+    if api_key.0 != api_keys.root_key {
+        // Otherwise check if key matches the event's allowed key
+        match api_keys.event_keys.get(event_name) {
+            Some(expected_key) if *expected_key == api_key.0 => (),
+            _ => return Err(Status::Forbidden),
+        }
+    }
 
     let mut events = state.lock().unwrap();
 
     let parsed_status = match EventStatus::from_str(&status.to_ascii_lowercase()) {
         Ok(s) => s,
-        Err(_) => return Json(events.clone()),
+        Err(_) => return Ok(Json(events.clone())),
     };
 
+    let mut updated = false;
     for event in events.iter_mut() {
         if event.name == event_name {
             event.status = parsed_status.clone();
+            updated = true;
         }
     }
 
-    fs::write("curr_state.json", serde_json::to_string_pretty(&*events).unwrap())
-        .expect("Unable to write curr_state.json");
+    if updated {
+        fs::write("curr_state.json", serde_json::to_string_pretty(&*events).unwrap())
+            .expect("Unable to write curr_state.json");
+    }
 
-    Json(events.clone())
+    Ok(Json(events.clone()))
 }
 
-
-
-
-
 #[get("/api/v3/get/events")]
-fn get_events(state: &rocket::State<SharedEvents>,_limitguard: RocketGovernor<RateLimitGuard>) -> Json<Vec<EventDetail>> {
+fn get_events(
+    state: &rocket::State<SharedEvents>,
+    _limitguard: RocketGovernor<RateLimitGuard>
+) -> Json<Vec<EventDetail>> {
     let events = state.lock().unwrap();
     Json(events.clone())
 }
@@ -169,11 +198,15 @@ fn get_events(state: &rocket::State<SharedEvents>,_limitguard: RocketGovernor<Ra
 #[launch]
 fn rocket() -> _ {
     let events = load_initial_state();
+    let api_keys = ApiKeys::load_from_env();
+
     let cors = CorsOptions::default()
         .to_cors()
         .expect("error creating CORS fairing");
+
     rocket::build()
         .manage(Mutex::new(events))
+        .manage(api_keys)
         .mount("/", routes![
             update_event,
             get_events
