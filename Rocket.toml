@@ -1,4 +1,4 @@
 [default]
 address = "127.0.0.1"
-port = 8000
+port = 4000
 # tls = { certs = "cert.pem", key = "key.pem" }
