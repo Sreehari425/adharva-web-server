@@ -1,0 +1,12 @@
+name: Keep Render Server Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # every 10 minutes
+
+jobs:
+  ping-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API
+        run: curl -s http://api.adharvaa.com/ > /dev/null
