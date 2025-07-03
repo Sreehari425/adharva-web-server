@@ -8,7 +8,7 @@ use rocket::request::{FromRequest, Outcome, Request};
 use dotenvy::{dotenv, var};
 use rocket_governor::{Method, Quota, RocketGovernable, RocketGovernor};
 use rocket_cors::{CorsOptions};
-
+use rocket_cors::{AllowedOrigins, AllowedHeaders};
 type SharedEvents = Mutex<Vec<EventDetail>>;
 
 pub struct ApiKey(String);
@@ -200,10 +200,24 @@ fn rocket() -> _ {
     let events = load_initial_state();
     let api_keys = ApiKeys::load_from_env();
 
-    let cors = CorsOptions::default()
-        .to_cors()
-        .expect("error creating CORS fairing");
+    let allowed_origins = AllowedOrigins::some_exact(&["https://adharvaa.com"]);
 
+    let cors = CorsOptions {
+        allowed_origins,
+        allowed_methods: vec!["GET".parse().unwrap(), "POST".parse().unwrap()]
+            .into_iter()
+            .collect(),
+        allowed_headers: AllowedHeaders::some(&[
+            "Authorization",
+            "Accept",
+            "Content-Type",
+            "Origin",
+        ]),
+        allow_credentials: true,
+        ..Default::default()
+    }
+    .to_cors()
+    .expect("error creating CORS fairing");
     rocket::build()
         .manage(Mutex::new(events))
         .manage(api_keys)
